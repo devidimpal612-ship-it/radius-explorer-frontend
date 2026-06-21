@@ -1,9 +1,9 @@
 "use client";
 import { useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import type { Place } from "@/components/Map";
+import type { Place } from "../components/Map";
 
-const Map = dynamic(() => import("@/components/Map"), { ssr: false });
+const Map = dynamic(() => import("../components/Map"), { ssr: false });
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
