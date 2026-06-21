@@ -1,7 +1,8 @@
 "use client";
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import type { Place } from "../components/Map";
+import LocationInput, { Suggestion } from "../components/LocationInput";
 
 const Map = dynamic(() => import("../components/Map"), { ssr: false });
 
@@ -53,9 +54,12 @@ export default function Home() {
   // Distance tab state
   const [distFrom, setDistFrom] = useState("");
   const [distTo, setDistTo] = useState("");
+  const [distFromCoords, setDistFromCoords] = useState<Suggestion | null>(null);
+  const [distToCoords, setDistToCoords] = useState<Suggestion | null>(null);
   const [distMode, setDistMode] = useState("driving");
   const [distResult, setDistResult] = useState<DistanceResult | null>(null);
   const [distLoading, setDistLoading] = useState(false);
+  const [distError, setDistError] = useState("");
 
   const searchPlaces = useCallback(async (lat: number, lon: number, r: number) => {
     const [placesRes, statsRes] = await Promise.all([
@@ -67,7 +71,6 @@ export default function Home() {
     setPlaces(placesData.places || []);
     setStats(statsData);
   }, []);
-
 
   const handleMapClick = useCallback(async (lat: number, lon: number) => {
     setLoading(true);
@@ -85,6 +88,22 @@ export default function Home() {
     setLoading(false);
   }, [radius, searchPlaces]);
 
+  // When user picks a suggestion from the main search autocomplete
+  const handleMainSelect = async (s: Suggestion) => {
+    setQuery(s.display_name);
+    setLocationName(s.display_name);
+    setCenter([s.lat, s.lon]);
+    setLoading(true);
+    setError("");
+    try {
+      await searchPlaces(s.lat, s.lon, radius);
+    } catch (err: any) {
+      setError("Failed to load places");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -93,7 +112,7 @@ export default function Home() {
     try {
       const res = await fetch(`${API}/api/search?q=${encodeURIComponent(query)}`);
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error("Location not found — try selecting a suggestion instead");
       const { lat, lon, display_name } = data.results[0];
       setCenter([lat, lon]);
       setLocationName(display_name);
@@ -116,33 +135,28 @@ export default function Home() {
 
   const handleDistance = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!distFrom || !distTo) return;
+    setDistError("");
+
+    if (!distFromCoords || !distToCoords) {
+      setDistError("Please select both locations from the suggestion list");
+      return;
+    }
+
     setDistLoading(true);
     setDistResult(null);
     setRouteGeometry(null);
     try {
-      const [fromRes, toRes] = await Promise.all([
-        fetch(`${API}/api/search?q=${encodeURIComponent(distFrom)}`),
-        fetch(`${API}/api/search?q=${encodeURIComponent(distTo)}`),
-      ]);
-      const fromData = await fromRes.json();
-      const toData = await toRes.json();
-      if (fromData.error || toData.error) throw new Error("Location not found");
-
-      const from = fromData.results[0];
-      const to = toData.results[0];
-
       const distRes = await fetch(
-        `${API}/api/distance?lat1=${from.lat}&lon1=${from.lon}&lat2=${to.lat}&lon2=${to.lon}&mode=${distMode}`
+        `${API}/api/distance?lat1=${distFromCoords.lat}&lon1=${distFromCoords.lon}&lat2=${distToCoords.lat}&lon2=${distToCoords.lon}&mode=${distMode}`
       );
       const dist = await distRes.json();
       if (dist.error) throw new Error(dist.error);
 
       setDistResult(dist);
       setRouteGeometry(dist.geometry);
-      setCenter([from.lat, from.lon]);
+      setCenter([distFromCoords.lat, distFromCoords.lon]);
     } catch (err: any) {
-      setError(err.message);
+      setDistError(err.message || "Could not calculate distance between these points");
     } finally {
       setDistLoading(false);
     }
@@ -188,23 +202,19 @@ export default function Home() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
         {/* ── SIDEBAR ── */}
-        <div style={{ width: 340, borderRight: "1px solid rgba(0,212,255,0.12)", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
+        <div style={{ width: 360, borderRight: "1px solid rgba(0,212,255,0.12)", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
 
           {activeTab === "explore" ? (
             <>
               {/* Search form */}
-              <div style={{ padding: 16, borderBottom: "1px solid rgba(0,212,255,0.08)" }}>
+              <div style={{ padding: 16, borderBottom: "1px solid rgba(0,212,255,0.08)", position: "relative", zIndex: 20 }}>
                 <form onSubmit={handleSearch}>
                   <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                    <input
+                    <LocationInput
                       value={query}
-                      onChange={(e) => setQuery(e.target.value)}
+                      onChange={setQuery}
+                      onSelect={handleMainSelect}
                       placeholder="Search any location..."
-                      style={{
-                        flex: 1, padding: "10px 14px", borderRadius: 8,
-                        background: "#0D1B2A", border: "1px solid rgba(0,212,255,0.2)",
-                        color: "#F0F4FF", fontSize: 14, outline: "none",
-                      }}
                     />
                     <button
                       type="submit"
@@ -213,7 +223,7 @@ export default function Home() {
                         padding: "10px 16px", borderRadius: 8, border: "none",
                         background: "#00D4FF", color: "#0A0F1E", fontWeight: 700,
                         cursor: loading ? "not-allowed" : "pointer", fontSize: 14,
-                        opacity: loading ? 0.7 : 1,
+                        opacity: loading ? 0.7 : 1, flexShrink: 0,
                       }}
                     >
                       {loading ? "..." : "Go"}
@@ -323,30 +333,24 @@ export default function Home() {
             /* ── DISTANCE TAB ── */
             <div style={{ padding: 16, flex: 1, overflowY: "auto" }}>
               <form onSubmit={handleDistance}>
-                <div style={{ marginBottom: 12 }}>
+                <div style={{ marginBottom: 12, position: "relative", zIndex: 30 }}>
                   <label style={{ fontSize: 12, color: "#7A8BA0", marginBottom: 6, display: "block" }}>From</label>
-                  <input
+                  <LocationInput
                     value={distFrom}
-                    onChange={(e) => setDistFrom(e.target.value)}
+                    onChange={(v) => { setDistFrom(v); setDistFromCoords(null); }}
+                    onSelect={(s) => { setDistFrom(s.display_name); setDistFromCoords(s); }}
                     placeholder="Starting location..."
-                    style={{
-                      width: "100%", padding: "10px 14px", borderRadius: 8,
-                      background: "#0D1B2A", border: "1px solid rgba(0,212,255,0.2)",
-                      color: "#F0F4FF", fontSize: 14, outline: "none",
-                    }}
+                    accentColor="#7B2FFF"
                   />
                 </div>
-                <div style={{ marginBottom: 12 }}>
+                <div style={{ marginBottom: 12, position: "relative", zIndex: 20 }}>
                   <label style={{ fontSize: 12, color: "#7A8BA0", marginBottom: 6, display: "block" }}>To</label>
-                  <input
+                  <LocationInput
                     value={distTo}
-                    onChange={(e) => setDistTo(e.target.value)}
+                    onChange={(v) => { setDistTo(v); setDistToCoords(null); }}
+                    onSelect={(s) => { setDistTo(s.display_name); setDistToCoords(s); }}
                     placeholder="Destination..."
-                    style={{
-                      width: "100%", padding: "10px 14px", borderRadius: 8,
-                      background: "#0D1B2A", border: "1px solid rgba(0,212,255,0.2)",
-                      color: "#F0F4FF", fontSize: 14, outline: "none",
-                    }}
+                    accentColor="#7B2FFF"
                   />
                 </div>
 
@@ -390,7 +394,7 @@ export default function Home() {
                 </button>
               </form>
 
-              {error && <div style={{ marginTop: 12, color: "#FF6B6B", fontSize: 13 }}>{error}</div>}
+              {distError && <div style={{ marginTop: 12, color: "#FF6B6B", fontSize: 13 }}>{distError}</div>}
 
               {distResult && (
                 <div style={{ marginTop: 20 }}>
